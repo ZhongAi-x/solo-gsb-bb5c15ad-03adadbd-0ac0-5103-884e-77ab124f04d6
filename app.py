@@ -117,6 +117,31 @@ POST /api/shaping-plan  对称减针行程（左右相同减针数的逐行安�
     max_total_decrease 为约束下最多可减针数（双侧合计）。
   参数非法: {"ok": false, "error": {"type": "params", "message"}}
 
+POST /api/stripe-schedule  条纹用线排程（连续异色条纹恰好覆盖总行数）
+  请求: {"total_rows": 20,
+         "colors": [{"name": "米白", "rows": 12}, {"name": "藏青", "rows": 10}],
+         "min_len": 2, "max_len": 4, "preferred": 3}
+    total_rows 为总行数（1~40 的整数）；colors 按输入顺序给出 2~3 种颜色，
+    每个为 {"name", "rows"}：名称非空且互不重复，rows 为该色可编织行数
+    （非负整数，即库存）；min_len/max_len 为最短、最长条纹行数（1~6 的
+    整数且 min_len ≤ max_len）；preferred 为偏好段长（正数）。
+  成功: {"ok": true, "total_rows", "preferred", "min_len", "max_len",
+         "cost", "segment_count", "total_stock",
+         "segments": [{"index", "start", "end", "color_index", "color",
+                       "length"}, ...],
+         "colors": [{"index", "name", "stock", "used", "remaining"}, ...]}
+    每段长度在 [min_len, max_len] 内、相邻段异色、各色用量不超库存，且
+    各段长度之和恰好等于 total_rows；在可行方案中最小化各段长度与偏好段长
+    绝对差之和（cost，保留四位小数），同分按颜色输入顺序（颜色下标小者
+    优先）及段长升序取段序列字典序最小的方案。start/end 为该段起止行
+    （1 起，含两端）；求解由 stripe_schedule.solve_stripes 完成（动态规划，
+    Fraction 精确计算）。
+  无解: {"ok": false, "error": {"type": "infeasible", "message"}, ...}
+    不返回任何部分安排；message 说明原因（可行段数区间无法容纳总行数 /
+    库存合计不足 / 相邻异色与各色库存限制下无法恰好覆盖，后者另给出
+    约束下最多可连续覆盖的行数）。
+  参数非法: {"ok": false, "error": {"type": "params"|"colors", "message"}}
+
 逐行推算规则：每个尺码独立地以上一行的产出作为下一行的可用针数；某尺码
 消耗与可用针数不一致（不足或超出）时，仅该尺码停止并记录行号与差额，
 其余尺码继续推算。指令本身无法解析（含 *{a|b} 项数与尺码数不符、倍数
@@ -147,6 +172,7 @@ from flask import Flask, jsonify, render_template, request
 
 from pattern_layout import solve_layout
 from shaping_plan import solve_shaping
+from stripe_schedule import solve_stripes
 from stitch_parser import (
     STITCH_NAMES,
     ParseError,
@@ -336,6 +362,35 @@ def _parse_layout_sizes(raw):
 def _cm(frac):
     """精确分数转厘米显示值（保留两位小数）。"""
     return round(float(frac), 2)
+
+
+def _parse_stripe_colors(raw):
+    """校验条纹颜色列表，返回 ([{"name", "rows"}], 错误消息)。
+
+    需要恰好 2~3 种颜色，按输入顺序保留；名称非空且互不重复，rows 为该色
+    可编织行数（非负整数，即库存）。
+    """
+    if not isinstance(raw, list):
+        return None, "颜色列表应为 2~3 个 {\"name\", \"rows\"} 对象"
+    if not (2 <= len(raw) <= 3):
+        return None, "需要填写 2~3 种颜色（当前 {} 种）".format(len(raw))
+    colors = []
+    seen = set()
+    for idx, item in enumerate(raw, 1):
+        if not isinstance(item, dict):
+            return None, "第 {} 个颜色格式错误，应为 {{\"name\", \"rows\"}}".format(idx)
+        name = item.get("name")
+        if not isinstance(name, str) or not name.strip():
+            return None, "第 {} 个颜色的名称不能为空".format(idx)
+        name = name.strip()
+        if name in seen:
+            return None, "颜色名称重复：{}（相邻段异色与同分排序都按颜色区分）".format(name)
+        rows, err = _parse_nonneg_int(item.get("rows"), "颜色 {} 的可编织行数".format(name))
+        if err:
+            return None, err
+        seen.add(name)
+        colors.append({"name": name, "rows": rows})
+    return colors, None
 
 
 def _parse_error_obj(lineno, text, exc):
@@ -1016,6 +1071,124 @@ def shaping_plan():
             "remaining": p["remaining"],
             "progress": round(float(p["progress"]), 2),
         } for p in result["plan"]],
+    })
+
+
+@app.post("/api/stripe-schedule")
+def stripe_schedule():
+    """条纹用线排程：连续异色条纹恰好覆盖总行数，最小化段长与偏好段长的
+    绝对差之和。
+
+    每段长度在最短~最长（1~6）之间，相邻段颜色不同，各色累计用量不超过
+    其库存；同分按颜色输入顺序及段长升序取段序列字典序最小的方案。求解
+    由 stripe_schedule.solve_stripes 完成（动态规划，Fraction 精确计算），
+    无解时只报错、不返回任何部分安排。
+    """
+    data = request.get_json(silent=True) or {}
+
+    total_rows, err = _parse_nonneg_int(data.get("total_rows"), "总行数", positive=True)
+    if err:
+        return jsonify({"ok": False, "error": {"type": "params", "message": err}})
+    if not (1 <= total_rows <= 40):
+        return jsonify({
+            "ok": False,
+            "error": {"type": "params", "message": "总行数必须在 1~40 之间"},
+        })
+
+    colors, err = _parse_stripe_colors(data.get("colors"))
+    if err:
+        return jsonify({"ok": False, "error": {"type": "colors", "message": err}})
+
+    min_len, err = _parse_nonneg_int(data.get("min_len"), "最短条纹行数", positive=True)
+    if err:
+        return jsonify({"ok": False, "error": {"type": "params", "message": err}})
+    max_len, err = _parse_nonneg_int(data.get("max_len"), "最长条纹行数", positive=True)
+    if err:
+        return jsonify({"ok": False, "error": {"type": "params", "message": err}})
+    if not (1 <= min_len <= 6 and 1 <= max_len <= 6):
+        return jsonify({
+            "ok": False,
+            "error": {"type": "params", "message": "最短与最长条纹行数必须在 1~6 之间"},
+        })
+    if min_len > max_len:
+        return jsonify({
+            "ok": False,
+            "error": {"type": "params",
+                      "message": "最短条纹行数不能大于最长条纹行数"},
+        })
+
+    preferred, err = _parse_fraction(data.get("preferred"), "偏好段长", positive=True)
+    if err:
+        return jsonify({"ok": False, "error": {"type": "params", "message": err}})
+
+    stocks = [c["rows"] for c in colors]
+    result = solve_stripes(total_rows, stocks, min_len, max_len, preferred)
+
+    if not result["ok"]:
+        reason = result["reason"]
+        total_stock = result["total_stock"]
+        if reason == "length_range":
+            if result["segment_count_max"] == 0:
+                message = (
+                    "无法排程：总行数 {} 小于最短条纹行数 {}，连一段都放不下".format(
+                        total_rows, min_len))
+            else:
+                message = (
+                    "无法排程：每段长度限定在 {}~{} 行，k 段能覆盖的总行数只能是"
+                    " {}×k~{}×k；总行数 {} 不在任何整数段数的可覆盖区间内"
+                    "（可行段数需满足 {} ≤ k ≤ {}，该范围为空）".format(
+                        min_len, max_len, min_len, max_len, total_rows,
+                        result["segment_count_min"], result["segment_count_max"]))
+        elif reason == "stock_shortage":
+            message = (
+                "无法排程：{} 种颜色库存合计仅 {} 行，少于需要覆盖的总行数 {}，"
+                "还差 {} 行".format(len(colors), total_stock, total_rows,
+                                    total_rows - total_stock))
+        else:
+            message = (
+                "无法排程：在每段 {}~{} 行、相邻段异色、各色用量不超库存的条件下，"
+                "没有恰好覆盖 {} 行的连续安排（不返回部分安排）；放松约束后最多可"
+                "连续覆盖 {} 行，可尝试放宽条纹长度区间、增加库存或调整颜色".format(
+                    min_len, max_len, total_rows, result["max_cover"]))
+        payload = {
+            "ok": False,
+            "error": {"type": "infeasible", "message": message},
+            "total_rows": total_rows,
+            "min_len": min_len,
+            "max_len": max_len,
+            "total_stock": total_stock,
+        }
+        if reason == "length_range":
+            payload["segment_count_min"] = result["segment_count_min"]
+            payload["segment_count_max"] = result["segment_count_max"]
+        if reason == "no_exact_cover":
+            payload["max_cover"] = result["max_cover"]
+        return jsonify(payload)
+
+    return jsonify({
+        "ok": True,
+        "total_rows": total_rows,
+        "min_len": min_len,
+        "max_len": max_len,
+        "preferred": round(float(preferred), 2),
+        "cost": round(float(result["cost"]), 4),
+        "segment_count": result["segment_count"],
+        "total_stock": result["total_stock"],
+        "segments": [{
+            "index": s["index"],
+            "start": s["start"],
+            "end": s["end"],
+            "color_index": s["color_index"],
+            "color": colors[s["color_index"]]["name"],
+            "length": s["length"],
+        } for s in result["segments"]],
+        "colors": [{
+            "index": i,
+            "name": colors[i]["name"],
+            "stock": stocks[i],
+            "used": result["used"][i],
+            "remaining": result["remaining"][i],
+        } for i in range(len(colors))],
     })
 
 

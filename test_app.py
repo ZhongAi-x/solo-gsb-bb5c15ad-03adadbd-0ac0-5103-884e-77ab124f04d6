@@ -1276,5 +1276,200 @@ class TestShapingPlanApi(unittest.TestCase):
         self.assertEqual(data['max_total_decrease'], 4)
 
 
+class TestStripeScheduleApi(unittest.TestCase):
+    PAYLOAD = {
+        'total_rows': 20,
+        'colors': [{'name': '米白', 'rows': 12},
+                  {'name': '藏青', 'rows': 8}],
+        'min_len': 2,
+        'max_len': 4,
+        'preferred': 3,
+    }
+
+    def setUp(self):
+        self.client = app.test_client()
+
+    def post(self, **overrides):
+        payload = {
+            'total_rows': self.PAYLOAD['total_rows'],
+            'colors': [dict(c) for c in self.PAYLOAD['colors']],
+            'min_len': self.PAYLOAD['min_len'],
+            'max_len': self.PAYLOAD['max_len'],
+            'preferred': self.PAYLOAD['preferred'],
+        }
+        payload.update(overrides)
+        return self.client.post('/api/stripe-schedule', json=payload).get_json()
+
+    def test_basic_schedule(self):
+        data = self.post()
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['total_rows'], 20)
+        self.assertEqual(data['min_len'], 2)
+        self.assertEqual(data['max_len'], 4)
+        self.assertEqual(data['preferred'], 3)
+        self.assertEqual(data['segment_count'], 7)
+        self.assertEqual(data['cost'], 1)
+        # 段序列：缩短的 2 行段落在最靠前的可行颜色（藏青，第 2 段）
+        self.assertEqual(
+            [(s['color_index'], s['length']) for s in data['segments']],
+            [(0, 3), (1, 2), (0, 3), (1, 3), (0, 3), (1, 3), (0, 3)])
+
+    def test_segment_fields_cover_all_rows(self):
+        data = self.post()
+        self.assertTrue(data['ok'])
+        segments = data['segments']
+        self.assertEqual(segments[0]['start'], 1)
+        self.assertEqual(segments[0]['end'], 3)
+        self.assertEqual(segments[0]['color'], '米白')
+        for prev, seg in zip(segments, segments[1:]):
+            self.assertEqual(seg['start'], prev['end'] + 1)
+            self.assertNotEqual(seg['color_index'], prev['color_index'])
+            self.assertTrue(2 <= seg['length'] <= 4)
+        self.assertEqual(segments[-1]['end'], 20)
+        self.assertEqual([s['index'] for s in segments],
+                         list(range(1, len(segments) + 1)))
+
+    def test_color_summary_usage_and_remaining(self):
+        data = self.post()
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['total_stock'], 20)
+        by_index = {c['index']: c for c in data['colors']}
+        self.assertEqual(by_index[0]['name'], '米白')
+        self.assertEqual((by_index[0]['stock'], by_index[0]['used'],
+                          by_index[0]['remaining']), (12, 12, 0))
+        self.assertEqual((by_index[1]['stock'], by_index[1]['used'],
+                          by_index[1]['remaining']), (8, 8, 0))
+        # 各色用量与逐段长度一致
+        for color in data['colors']:
+            used = sum(s['length'] for s in data['segments']
+                       if s['color_index'] == color['index'])
+            self.assertEqual(color['used'], used)
+            self.assertEqual(color['remaining'], color['stock'] - used)
+
+    def test_three_colors_accepted(self):
+        data = self.post(colors=[
+            {'name': 'A', 'rows': 5},
+            {'name': 'B', 'rows': 5},
+            {'name': 'C', 'rows': 5},
+        ], total_rows=12, min_len=2, max_len=3, preferred=3)
+        self.assertTrue(data['ok'])
+        self.assertEqual(len(data['colors']), 3)
+        self.assertEqual(data['segments'][-1]['end'], 12)
+
+    def test_string_numbers_accepted(self):
+        data = self.post(total_rows='20', min_len='2', max_len='4',
+                         preferred='3',
+                         colors=[{'name': '米白', 'rows': '12'},
+                                 {'name': '藏青', 'rows': '8'}])
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['segment_count'], 7)
+
+    def test_preferred_decimal_accepted(self):
+        data = self.post(preferred='2.5')
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['preferred'], 2.5)
+
+    def test_tie_break_color_input_order(self):
+        # 8 行、段长 1~4、库存充足、偏好 2.5：以颜色 0 开头与以颜色 1 开头
+        # 的最优序列同分，按颜色输入顺序取颜色 0 开头
+        data = self.post(total_rows=8, min_len=1, max_len=4, preferred=2.5,
+                         colors=[{'name': '甲', 'rows': 8},
+                                 {'name': '乙', 'rows': 8}])
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['segments'][0]['color_index'], 0)
+        self.assertEqual(data['segments'][0]['color'], '甲')
+
+    def test_bad_total_rows(self):
+        for bad in (0, 41, -1, 'x', 1.5, True, None):
+            data = self.post(total_rows=bad)
+            self.assertFalse(data['ok'], msg=repr(bad))
+            self.assertEqual(data['error']['type'], 'params', msg=repr(bad))
+            self.assertNotIn('segments', data)
+
+    def test_bad_length_bounds(self):
+        for field in ('min_len', 'max_len'):
+            for bad in (0, 7, -1, 'x', True, None, 1.5):
+                data = self.post(**{field: bad})
+                self.assertFalse(data['ok'], msg='{}={!r}'.format(field, bad))
+                self.assertEqual(data['error']['type'], 'params')
+
+    def test_min_greater_than_max(self):
+        data = self.post(min_len=4, max_len=2)
+        self.assertFalse(data['ok'])
+        self.assertEqual(data['error']['type'], 'params')
+        self.assertIn('不能大于', data['error']['message'])
+
+    def test_bad_preferred(self):
+        for bad in (0, -1, 'x', True, None):
+            data = self.post(preferred=bad)
+            self.assertFalse(data['ok'], msg=repr(bad))
+            self.assertEqual(data['error']['type'], 'params')
+
+    def test_colors_must_be_two_or_three(self):
+        one = self.post(colors=[{'name': 'A', 'rows': 20}])
+        self.assertFalse(one['ok'])
+        self.assertEqual(one['error']['type'], 'colors')
+        four = self.post(colors=[{'name': c, 'rows': 10}
+                                 for c in ('A', 'B', 'C', 'D')])
+        self.assertFalse(four['ok'])
+        self.assertEqual(four['error']['type'], 'colors')
+        empty = self.post(colors=[])
+        self.assertFalse(empty['ok'])
+        self.assertEqual(empty['error']['type'], 'colors')
+
+    def test_colors_validation(self):
+        missing_name = self.post(
+            colors=[{'rows': 10}, {'name': 'B', 'rows': 10}])
+        self.assertFalse(missing_name['ok'])
+        self.assertEqual(missing_name['error']['type'], 'colors')
+
+        duplicate = self.post(
+            colors=[{'name': '红', 'rows': 10}, {'name': '红', 'rows': 10}])
+        self.assertFalse(duplicate['ok'])
+        self.assertEqual(duplicate['error']['type'], 'colors')
+        self.assertIn('重复', duplicate['error']['message'])
+
+        bad_rows = self.post(
+            colors=[{'name': 'A', 'rows': -1}, {'name': 'B', 'rows': 10}])
+        self.assertFalse(bad_rows['ok'])
+        self.assertEqual(bad_rows['error']['type'], 'colors')
+
+        not_list = self.post(colors={'name': 'A', 'rows': 10})
+        self.assertFalse(not_list['ok'])
+        self.assertEqual(not_list['error']['type'], 'colors')
+
+    def test_infeasible_length_range(self):
+        # 段长 4~6：7 行既放不下 1 段也至少需要 8 行才能排 2 段
+        data = self.post(total_rows=7, min_len=4, max_len=6,
+                         colors=[{'name': 'A', 'rows': 7},
+                                 {'name': 'B', 'rows': 7}])
+        self.assertFalse(data['ok'])
+        self.assertEqual(data['error']['type'], 'infeasible')
+        self.assertEqual(data['segment_count_min'], 2)
+        self.assertEqual(data['segment_count_max'], 1)
+        self.assertNotIn('segments', data)
+
+    def test_infeasible_stock_shortage(self):
+        data = self.post(
+            colors=[{'name': '米白', 'rows': 8}, {'name': '藏青', 'rows': 7}])
+        self.assertFalse(data['ok'])
+        self.assertEqual(data['error']['type'], 'infeasible')
+        self.assertEqual(data['total_stock'], 15)
+        self.assertIn('还差 5 行', data['error']['message'])
+        self.assertNotIn('segments', data)
+
+    def test_infeasible_no_exact_cover(self):
+        # 6 行、段长 3~5：需两段异色各 3 行，颜色 0 库存仅 2
+        data = self.post(total_rows=6, min_len=3, max_len=5, preferred=3,
+                         colors=[{'name': 'A', 'rows': 2},
+                                 {'name': 'B', 'rows': 6}])
+        self.assertFalse(data['ok'])
+        self.assertEqual(data['error']['type'], 'infeasible')
+        self.assertEqual(data['max_cover'], 5)
+        self.assertIn('最多可连续覆盖 5 行', data['error']['message'])
+        self.assertIn('不返回部分安排', data['error']['message'])
+        self.assertNotIn('segments', data)
+
+
 if __name__ == '__main__':
     unittest.main()

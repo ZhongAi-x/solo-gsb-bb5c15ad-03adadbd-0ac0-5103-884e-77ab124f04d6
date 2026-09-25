@@ -293,6 +293,56 @@
         <div id="shaping-table-wrap"></div>
       </section>
     </section>
+
+    <section class="preview-section" id="stripe-section">
+      <h2>条纹用线排程</h2>
+      <p class="hint">
+        输入总行数（1~40），按顺序填写 2~3 种颜色的名称与各自可编织行数（库存），
+        再给出最短、最长条纹行数（1~6）与偏好段长。计算会把总行数切成连续条纹：
+        每段长度都在区间内、相邻两段必须异色、每种颜色总用量不超过其库存，并
+        <strong>恰好覆盖全部行</strong>；在可行方案中<strong>最小化各段长度与
+        偏好段长的绝对差之和</strong>，同分时按<strong>颜色输入顺序、段长
+        升序</strong>取段序列最靠前的方案。结果逐段列出起止行、颜色与用量，
+        并汇总各色余量；<strong>无解时明确提示原因，不返回部分安排</strong>。
+      </p>
+      <form id="stripe-form">
+        <div class="layout-grid">
+          <label class="layout-item">
+            <span>总行数（1~40）</span>
+            <input type="number" id="stripe-total-rows" min="1" max="40" step="1" value="20" required>
+          </label>
+          <label class="layout-item">
+            <span>最短条纹行数（1~6）</span>
+            <input type="number" id="stripe-min-len" min="1" max="6" step="1" value="2" required>
+          </label>
+          <label class="layout-item">
+            <span>最长条纹行数（1~6）</span>
+            <input type="number" id="stripe-max-len" min="1" max="6" step="1" value="4" required>
+          </label>
+          <label class="layout-item">
+            <span>偏好段长</span>
+            <input type="number" id="stripe-preferred" min="0" step="0.1" value="3" required>
+          </label>
+        </div>
+
+        <div class="field">
+          <span>颜色与可编织行数（按输入顺序，2~3 种，名称不可重复）</span>
+          <div id="stripe-colors-list"></div>
+          <button type="button" id="stripe-add-color" class="small">＋ 添加颜色</button>
+        </div>
+
+        <div class="actions">
+          <button type="submit">计算条纹排程</button>
+          <button type="button" id="stripe-fill-example">填入示例</button>
+        </div>
+      </form>
+      <div id="stripe-message" class="move-message" hidden></div>
+      <section id="stripe-result" hidden>
+        <div id="stripe-meta" class="preview-meta"></div>
+        <div id="stripe-colors-wrap"></div>
+        <div id="stripe-table-wrap"></div>
+      </section>
+    </section>
   </main>
 
   <script src="{{ url_for('static', filename='app.js') }}"></script>

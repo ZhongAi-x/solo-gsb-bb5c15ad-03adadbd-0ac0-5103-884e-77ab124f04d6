@@ -542,3 +542,60 @@ button.small {
   background: #f1ece0;
   font-weight: 600;
 }
+
+/* 条纹用线排程 */
+#stripe-colors-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.stripe-order {
+  width: 52px;
+  flex: none;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #6b5f50;
+}
+
+#stripe-colors-list .stripe-color-rows {
+  width: 150px;
+  max-width: none;
+}
+
+#stripe-result {
+  margin-top: 14px;
+}
+
+#stripe-colors-wrap {
+  overflow-x: auto;
+  margin-bottom: 14px;
+}
+
+#stripe-table-wrap {
+  overflow-x: auto;
+}
+
+/* 按颜色输入顺序区分条纹：循环使用三套底色（td:nth-child(2) 的全局
+   等宽字体规则会覆盖此处第二列背景，故各表第二列单独补上同色背景） */
+#stripe-table-wrap tr.stripe-color-0 td,
+#stripe-colors-wrap tr.stripe-color-0 td,
+#stripe-table-wrap tr.stripe-color-0 td:nth-child(4),
+#stripe-colors-wrap tr.stripe-color-0 td:nth-child(2) {
+  background: #f3efe4;
+}
+
+#stripe-table-wrap tr.stripe-color-1 td,
+#stripe-colors-wrap tr.stripe-color-1 td,
+#stripe-table-wrap tr.stripe-color-1 td:nth-child(4),
+#stripe-colors-wrap tr.stripe-color-1 td:nth-child(2) {
+  background: #e6ecef;
+}
+
+#stripe-table-wrap tr.stripe-color-2 td,
+#stripe-colors-wrap tr.stripe-color-2 td,
+#stripe-table-wrap tr.stripe-color-2 td:nth-child(4),
+#stripe-colors-wrap tr.stripe-color-2 td:nth-child(2) {
+  background: #f1e7ec;
+}
