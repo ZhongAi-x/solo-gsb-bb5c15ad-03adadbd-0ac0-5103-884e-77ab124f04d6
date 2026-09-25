@@ -1235,3 +1235,265 @@ shapingForm.addEventListener('submit', async (event) => {
     '已排出 ' + data.rows + ' 行减针行程，末行余针恰好 ' + data.target + ' 针。', true);
   renderShaping(data);
 });
+
+// ---------------------------------------------------------------------------
+// 条纹用线排程
+// ---------------------------------------------------------------------------
+
+const stripeForm = document.getElementById('stripe-form');
+const stripeColorsList = document.getElementById('stripe-colors-list');
+const stripeAddBtn = document.getElementById('stripe-add-color');
+const stripeExampleBtn = document.getElementById('stripe-fill-example');
+const stripeMessage = document.getElementById('stripe-message');
+const stripeResult = document.getElementById('stripe-result');
+const stripeBarWrap = document.getElementById('stripe-bar-wrap');
+const stripeMeta = document.getElementById('stripe-meta');
+const stripeSegmentsWrap = document.getElementById('stripe-segments-wrap');
+const stripeColorsWrap = document.getElementById('stripe-colors-wrap');
+const stripeInputs = {
+  total_rows: document.getElementById('stripe-total-rows'),
+  min_len: document.getElementById('stripe-min-len'),
+  max_len: document.getElementById('stripe-max-len'),
+  preferred: document.getElementById('stripe-preferred'),
+};
+
+const STRIPE_MIN_COLORS = 2;
+const STRIPE_MAX_COLORS = 3;
+// 各颜色输入顺序固定的调色板（仅用于页面色块，不影响求解）
+const STRIPE_SWATCHES = ['#c97b63', '#6f8fa8', '#8aa86b', '#c2a15d'];
+const STRIPE_EXAMPLE = {
+  total_rows: '12',
+  min_len: '2',
+  max_len: '6',
+  preferred: '4',
+  colors: [
+    { name: '红', stock: '6' },
+    { name: '蓝', stock: '5' },
+    { name: '绿', stock: '3' },
+  ],
+};
+
+function addStripeColorRow(name, stock) {
+  const row = document.createElement('div');
+  row.className = 'stripe-color-row';
+
+  const swatch = document.createElement('span');
+  swatch.className = 'stripe-swatch';
+
+  const nameInput = document.createElement('input');
+  nameInput.type = 'text';
+  nameInput.className = 'stripe-color-name';
+  nameInput.placeholder = '颜色名称';
+  nameInput.value = name;
+  nameInput.required = true;
+
+  const stockInput = document.createElement('input');
+  stockInput.type = 'number';
+  stockInput.className = 'stripe-color-stock';
+  stockInput.min = '1';
+  stockInput.step = '1';
+  stockInput.placeholder = '可编织行数';
+  stockInput.value = stock;
+  stockInput.required = true;
+
+  const removeBtn = document.createElement('button');
+  removeBtn.type = 'button';
+  removeBtn.className = 'remove-size stripe-remove-color';
+  removeBtn.textContent = '×';
+  removeBtn.title = '删除该颜色';
+  removeBtn.addEventListener('click', () => {
+    row.remove();
+    updateStripeRows();
+  });
+
+  row.appendChild(swatch);
+  row.appendChild(nameInput);
+  row.appendChild(stockInput);
+  row.appendChild(removeBtn);
+  stripeColorsList.appendChild(row);
+  updateStripeRows();
+}
+
+function updateStripeRows() {
+  const rows = stripeColorsList.querySelectorAll('.stripe-color-row');
+  rows.forEach((row, i) => {
+    const swatch = row.querySelector('.stripe-swatch');
+    swatch.style.background = STRIPE_SWATCHES[i % STRIPE_SWATCHES.length];
+    swatch.title = '颜色输入顺序：第 ' + (i + 1) + ' 位';
+    row.querySelector('.stripe-remove-color').disabled =
+      rows.length <= STRIPE_MIN_COLORS;
+  });
+  stripeAddBtn.disabled = rows.length >= STRIPE_MAX_COLORS;
+}
+
+function readStripeColors() {
+  return Array.from(stripeColorsList.querySelectorAll('.stripe-color-row'))
+    .map((row) => ({
+      name: row.querySelector('.stripe-color-name').value,
+      stock: row.querySelector('.stripe-color-stock').value,
+    }));
+}
+
+function showStripeMessage(text) {
+  stripeMessage.textContent = text;
+  stripeMessage.className = 'move-message error';
+  stripeMessage.hidden = false;
+}
+
+function hideStripeMessage() {
+  stripeMessage.hidden = true;
+  stripeMessage.textContent = '';
+}
+
+stripeAddBtn.addEventListener('click', () => {
+  addStripeColorRow('', '');
+  stripeResult.hidden = true;
+  hideStripeMessage();
+});
+
+stripeExampleBtn.addEventListener('click', () => {
+  for (const key of Object.keys(stripeInputs)) {
+    stripeInputs[key].value = STRIPE_EXAMPLE[key];
+  }
+  stripeColorsList.replaceChildren();
+  for (const color of STRIPE_EXAMPLE.colors) {
+    addStripeColorRow(color.name, color.stock);
+  }
+  stripeResult.hidden = true;
+  hideStripeMessage();
+});
+
+function buildStripeTable(labels, rows) {
+  const table = document.createElement('table');
+  const thead = document.createElement('thead');
+  const headRow = document.createElement('tr');
+  for (const label of labels) {
+    const th = document.createElement('th');
+    th.textContent = label;
+    headRow.appendChild(th);
+  }
+  thead.appendChild(headRow);
+  table.appendChild(thead);
+
+  const tbody = document.createElement('tbody');
+  for (const cells of rows) {
+    const tr = document.createElement('tr');
+    for (const cell of cells) {
+      const td = document.createElement('td');
+      if (cell && typeof cell === 'object' && cell.nodeType) {
+        td.appendChild(cell);  // 允许传入带色块的节点
+      } else {
+        td.textContent = cell;
+      }
+      tr.appendChild(td);
+    }
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  return table;
+}
+
+function colorChip(name, index) {
+  const chip = document.createElement('span');
+  chip.className = 'stripe-chip';
+  const dot = document.createElement('span');
+  dot.className = 'stripe-chip-dot';
+  dot.style.background = STRIPE_SWATCHES[index % STRIPE_SWATCHES.length];
+  const text = document.createElement('span');
+  text.textContent = name;
+  chip.appendChild(dot);
+  chip.appendChild(text);
+  return chip;
+}
+
+function renderStripeBar(data) {
+  // 按总行数等比例的条纹示意条：每段 flex-grow 按段长，宽度即占比
+  const bar = document.createElement('div');
+  bar.className = 'stripe-bar';
+  for (const seg of data.segments) {
+    const block = document.createElement('div');
+    block.className = 'stripe-bar-block';
+    block.style.flexGrow = String(seg.length);
+    block.style.background =
+      STRIPE_SWATCHES[seg.color_index % STRIPE_SWATCHES.length];
+    block.title = '第 ' + seg.start_row + '–' + seg.end_row + ' 行：' +
+      seg.color + ' ' + seg.length + ' 行';
+    block.textContent = seg.color + ' ' + seg.length;
+    bar.appendChild(block);
+  }
+  stripeBarWrap.replaceChildren(bar);
+}
+
+function renderStripe(data) {
+  stripeResult.hidden = false;
+  hideStripeMessage();
+
+  renderStripeBar(data);
+  stripeMeta.textContent =
+    '总行数 ' + data.total_rows + ' 行' +
+    '　｜　共 ' + data.num_segments + ' 段连续条纹' +
+    '　｜　段长区间 ' + data.min_len + '~' + data.max_len + ' 行' +
+    '　｜　偏好段长 ' + data.preferred + ' 行' +
+    '　｜　各段与偏好段长绝对差之和：' + data.cost;
+
+  const segmentRows = data.segments.map((seg) => [
+    seg.index,
+    seg.start_row === seg.end_row
+      ? '第 ' + seg.start_row + ' 行'
+      : '第 ' + seg.start_row + '–' + seg.end_row + ' 行',
+    colorChip(seg.color, seg.color_index),
+    seg.length + ' 行',
+    '|' + seg.length + ' − ' + data.preferred + '| = ' +
+      Math.abs(seg.length - data.preferred),
+  ]);
+  stripeSegmentsWrap.replaceChildren();
+  stripeSegmentsWrap.appendChild(buildStripeTable(
+    ['段次', '起止行', '颜色', '本段用量', '与偏好段长之差'], segmentRows));
+
+  const colorRows = data.colors.map((color) => [
+    colorChip(color.name, color.index),
+    color.stock + ' 行',
+    color.used + ' 行',
+    color.remaining + ' 行',
+  ]);
+  stripeColorsWrap.replaceChildren();
+  stripeColorsWrap.appendChild(buildStripeTable(
+    ['颜色（输入顺序）', '库存（可编织行数）', '实际用量', '余量'], colorRows));
+}
+
+stripeForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  hideStripeMessage();
+  stripeResult.hidden = true;
+
+  let data;
+  try {
+    const res = await fetch('/api/stripe-schedule', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        total_rows: stripeInputs.total_rows.value,
+        min_len: stripeInputs.min_len.value,
+        max_len: stripeInputs.max_len.value,
+        preferred: stripeInputs.preferred.value,
+        colors: readStripeColors(),
+      }),
+    });
+    data = await res.json();
+  } catch (err) {
+    showStripeMessage('条纹排程请求失败：' + err.message);
+    return;
+  }
+
+  // 无解或参数非法：只提示原因，不展示任何（部分）安排
+  if (!data.ok) {
+    showStripeMessage(data.error ? data.error.message : '计算失败：未知错误');
+    return;
+  }
+  renderStripe(data);
+});
+
+// 初始填入示例，便于直接体验
+for (const color of STRIPE_EXAMPLE.colors) {
+  addStripeColorRow(color.name, color.stock);
+}

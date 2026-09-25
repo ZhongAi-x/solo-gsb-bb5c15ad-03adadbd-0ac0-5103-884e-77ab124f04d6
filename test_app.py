@@ -1276,5 +1276,157 @@ class TestShapingPlanApi(unittest.TestCase):
         self.assertEqual(data['max_total_decrease'], 4)
 
 
+class TestStripeScheduleApi(unittest.TestCase):
+    PAYLOAD = {
+        'total_rows': 12,
+        'colors': [
+            {'name': '红', 'stock': 6},
+            {'name': '蓝', 'stock': 5},
+            {'name': '绿', 'stock': 3},
+        ],
+        'min_len': 2,
+        'max_len': 6,
+        'preferred': 4,
+    }
+
+    def setUp(self):
+        self.client = app.test_client()
+
+    def post(self, **overrides):
+        payload = dict(self.PAYLOAD)
+        payload.update(overrides)
+        return self.client.post('/api/stripe-schedule', json=payload).get_json()
+
+    def test_basic_schedule(self):
+        data = self.post()
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['total_rows'], 12)
+        self.assertEqual(data['min_len'], 2)
+        self.assertEqual(data['max_len'], 6)
+        self.assertEqual(data['preferred'], 4)
+        self.assertEqual(data['num_segments'], 3)
+        self.assertEqual(data['cost'], 2)
+        segs = data['segments']
+        self.assertEqual(
+            [(s['index'], s['color'], s['length'], s['start_row'], s['end_row'])
+             for s in segs],
+            [(1, '红', 4, 1, 4), (2, '蓝', 5, 5, 9), (3, '绿', 3, 10, 12)])
+        # 首尾相接、恰好覆盖总行数
+        self.assertEqual(segs[0]['start_row'], 1)
+        self.assertEqual(segs[-1]['end_row'], 12)
+        for prev, seg in zip(segs, segs[1:]):
+            self.assertEqual(prev['end_row'] + 1, seg['start_row'])
+            self.assertNotEqual(prev['color_index'], seg['color_index'])
+        # 各色库存、用量与余量
+        self.assertEqual(
+            [(c['name'], c['stock'], c['used'], c['remaining'])
+             for c in data['colors']],
+            [('红', 6, 4, 2), ('蓝', 5, 5, 0), ('绿', 3, 3, 0)])
+
+    def test_string_numbers_accepted(self):
+        data = self.post(total_rows='12', min_len='2', max_len='6',
+                         preferred='4',
+                         colors=[{'name': '红', 'stock': '6'},
+                                 {'name': '蓝', 'stock': '6'}])
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['segments'][-1]['end_row'], 12)
+
+    def test_color_names_are_stripped(self):
+        data = self.post(
+            colors=[{'name': ' 红 ', 'stock': 6},
+                    {'name': '蓝', 'stock': 6}])
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['colors'][0]['name'], '红')
+
+    def test_tie_break_color_input_order(self):
+        # 6 行、偏好 3：3+3 代价 0，首段取输入顺序第一的颜色
+        data = self.post(
+            total_rows=6, min_len=2, max_len=6, preferred=3,
+            colors=[{'name': 'A', 'stock': 6}, {'name': 'B', 'stock': 6}])
+        self.assertTrue(data['ok'])
+        self.assertEqual([(s['color'], s['length']) for s in data['segments']],
+                         [('A', 3), ('B', 3)])
+
+    def test_bad_total_rows(self):
+        for bad in (0, -1, 41, 'x', True, None, 1.5, '1.5'):
+            data = self.post(total_rows=bad)
+            self.assertFalse(data['ok'], msg='total_rows={!r}'.format(bad))
+            self.assertEqual(data['error']['type'], 'params',
+                             msg='total_rows={!r}'.format(bad))
+            self.assertNotIn('segments', data)
+
+    def test_bad_len_bounds(self):
+        for field, bad_values in (
+                ('min_len', (0, 7, -1, 'x', True, None, 1.5)),
+                ('max_len', (0, 7, -1, 'x', True, None, 1.5))):
+            for bad in bad_values:
+                data = self.post(**{field: bad})
+                self.assertFalse(data['ok'], msg='{}={!r}'.format(field, bad))
+                self.assertEqual(data['error']['type'], 'params',
+                                 msg='{}={!r}'.format(field, bad))
+
+    def test_min_len_greater_than_max_len(self):
+        data = self.post(min_len=5, max_len=2)
+        self.assertFalse(data['ok'])
+        self.assertEqual(data['error']['type'], 'params')
+        self.assertIn('不能大于', data['error']['message'])
+
+    def test_bad_preferred(self):
+        for bad in (0, -1, 'x', True, None, 1.5):
+            data = self.post(preferred=bad)
+            self.assertFalse(data['ok'], msg='preferred={!r}'.format(bad))
+            self.assertEqual(data['error']['type'], 'params',
+                             msg='preferred={!r}'.format(bad))
+
+    def test_bad_colors_list(self):
+        cases = [
+            (None, 'colors'),
+            ([], 'colors'),
+            ([{'name': 'A', 'stock': 9}], 'colors'),
+            ([{'name': 'A', 'stock': 9}] * 4, 'colors'),
+            ('xx', 'colors'),
+            ([{'name': '', 'stock': 9}, {'name': 'B', 'stock': 9}], 'colors'),
+            ([{'name': 'A', 'stock': 0}, {'name': 'B', 'stock': 9}], 'colors'),
+            ([{'name': 'A', 'stock': -2}, {'name': 'B', 'stock': 9}], 'colors'),
+            ([{'name': 'A', 'stock': 'x'}, {'name': 'B', 'stock': 9}], 'colors'),
+        ]
+        for colors, error_type in cases:
+            data = self.post(colors=colors)
+            self.assertFalse(data['ok'], msg='colors={!r}'.format(colors))
+            self.assertEqual(data['error']['type'], error_type,
+                             msg='colors={!r}'.format(colors))
+            self.assertNotIn('segments', data)
+
+    def test_duplicate_color_names_rejected(self):
+        data = self.post(
+            colors=[{'name': '红', 'stock': 6}, {'name': '红', 'stock': 6}])
+        self.assertFalse(data['ok'])
+        self.assertEqual(data['error']['type'], 'colors')
+        self.assertIn('不能重复', data['error']['message'])
+
+    def test_infeasible_insufficient_stock(self):
+        data = self.post(
+            total_rows=12,
+            colors=[{'name': '红', 'stock': 6}, {'name': '蓝', 'stock': 5}])
+        self.assertFalse(data['ok'])
+        self.assertEqual(data['error']['type'], 'infeasible')
+        self.assertIn('合计仅 11 行', data['error']['message'])
+        self.assertIn('不返回部分安排', data['error']['message'])
+        self.assertNotIn('segments', data)
+
+    def test_infeasible_constraints(self):
+        # 7 行、段长只能为 2：无法恰好凑出奇数行
+        data = self.post(total_rows=7, min_len=2, max_len=2)
+        self.assertFalse(data['ok'])
+        self.assertEqual(data['error']['type'], 'infeasible')
+        self.assertIn('无法恰好凑出 7 行', data['error']['message'])
+        self.assertNotIn('segments', data)
+
+    def test_empty_body_is_params_error(self):
+        data = self.client.post('/api/stripe-schedule', json={}).get_json()
+        self.assertFalse(data['ok'])
+        self.assertEqual(data['error']['type'], 'params')
+
+
 if __name__ == '__main__':
     unittest.main()

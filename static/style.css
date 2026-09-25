@@ -542,3 +542,94 @@ button.small {
   background: #f1ece0;
   font-weight: 600;
 }
+
+/* 条纹用线排程 */
+.stripe-colors-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.stripe-color-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.stripe-color-row .stripe-color-name {
+  flex: 1;
+  min-width: 0;
+}
+
+.stripe-color-row .stripe-color-stock {
+  width: 150px;
+  max-width: none;
+}
+
+.stripe-swatch {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  background: #b0a48f;
+}
+
+.stripe-remove-color {
+  padding: 8px 14px;
+  background: #b0a48f;
+  line-height: 1;
+}
+
+.stripe-remove-color:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+#stripe-result {
+  margin-top: 14px;
+}
+
+#stripe-segments-wrap,
+#stripe-colors-wrap {
+  overflow-x: auto;
+  margin-bottom: 16px;
+}
+
+.stripe-bar {
+  display: flex;
+  gap: 2px;
+  margin: 10px 0;
+  border: 1px solid #c9c2b2;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.stripe-bar-block {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 42px;
+  padding: 10px 4px;
+  color: #fff;
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+  white-space: nowrap;
+}
+
+.stripe-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.stripe-chip-dot {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+}
